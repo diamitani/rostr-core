@@ -16,11 +16,29 @@ import sys
 import uuid
 from typing import Dict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from harness import HarnessSession
 
 SESSIONS: dict[str, HarnessSession] = {}
+
+
+def _request_path(handler: BaseHTTPRequestHandler) -> str:
+    parsed = urlparse(handler.path)
+    path = parsed.path.rstrip("/") or "/"
+    qs = parse_qs(parsed.query)
+    if qs.get("__path"):
+        return qs["__path"][0].rstrip("/") or "/"
+    for header in ("x-invoke-path", "x-forwarded-uri", "x-vercel-original-path", "x-matched-path"):
+        raw = handler.headers.get(header)
+        if raw:
+            return urlparse(raw).path.rstrip("/") or "/"
+    aliases = {"/api": "/", "/api/index": "/", "/api/index.py": "/"}
+    if path in aliases:
+        return aliases[path]
+    if path.startswith("/api/"):
+        return path[4:].rstrip("/") or "/"
+    return path
 
 
 def _json(handler, code, payload):
@@ -57,7 +75,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        path = urlparse(self.path).path.rstrip("/") or "/"
+        path = _request_path(self)
         if path in ("/", "/health", "/v1", "/v1/health"):
             return _json(self, 200, {
                 "ok": True,
@@ -81,7 +99,7 @@ class Handler(BaseHTTPRequestHandler):
             if not sess:
                 return _json(self, 404, {"ok": False, "error": "unknown session"})
             return _json(self, 200, {"ok": True, **_public(sess, sid)})
-        return _json(self, 404, {"ok": False, "error": "not found"})
+        return _json(self, 404, {"ok": False, "error": "not found", "path": path})
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -147,7 +165,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "generate": {"text": text, "model": model, "provider": "vercel-ai-gateway"},
             })
-        return _json(self, 404, {"ok": False, "error": "not found"})
+        return _json(self, 404, {"ok": False, "error": "not found", "path": path})
 
 
 def jev_tokens(text: str) -> int:
