@@ -48,18 +48,8 @@ def _enhance(intent):
 
 
 def _route(intent):
-    t = intent.lower()
-    if any(w in t for w in ("research", "analyze", "investigate", "compare")):
-        return "researcher"
-    if any(w in t for w in ("design", "page", "ui", "layout", "brand")):
-        return "designer"
-    if any(w in t for w in ("deploy", "ship", "release", "publish")):
-        return "deployer"
-    if any(w in t for w in ("bug", "fix", "error", "debug", "broken")):
-        return "debugger"
-    if any(w in t for w in ("review", "audit", "check")):
-        return "reviewer"
-    return "builder"
+    import jev
+    return jev.classify_agent(intent)
 
 
 def compile(intent, skill_path=None, hub=None, model=None,

@@ -1,96 +1,73 @@
-# Wiring rostr-core into anything — the process
+# Wiring the Jev harness into anything
 
-Five paths, in order of effort. Pick one; they compose.
-
-## A. Run it as-is (2 minutes)
+## A. Run it as-is
 
 ```bash
-cd rostr-core
-python3 demo.py            # mock — watch the whole loop print out
-cat .rostr/state.json      # every step, decision, and task the run recorded
+python3 test_harness.py
+python3 demo.py
+python3 server.py --port 8787
 ```
 
-This is the fastest way to understand the system: the demo prints PAL
-compiling, NPAO ordering, and each worker's thought → action → result loop.
-
-## B. Use the runtime inside any harness (15 minutes)
-
-The runtime is just functions. Any Python harness — Claude Code scripts,
-your own app, a cron job — can drive it:
+## B. Use ROSTR as another agent's harness backend
 
 ```python
-import json, sys
-sys.path.insert(0, "rostr-core")
-from hub import Hub
-from tools import default_registry
-from runtime import run_master, run_worker
-import pal as pal_mod
+import json, urllib.request
 
-config = json.load(open("rostr-core/config.json"))
-hub, tools = Hub(".rostr"), default_registry(config)
+def post(url, payload):
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    return json.loads(urllib.request.urlopen(req).read())
 
-# Whole objective, orchestrated:
-run_master("Research three playlist curators and draft outreach", hub, tools, config)
-
-# Or one compiled worker, à la carte:
-manifest, _ = pal_mod.compile("Write a 150-word artist bio for Copperline",
-                              skill_path="rostr-core/skills/create-an-epk/SKILL.md",
-                              hub=hub, tools_policy=config["tools"])
-run_worker(manifest, hub, tools, config, hub.create_run("bio"))
+s = post("http://127.0.0.1:8787/v1/sessions",
+         {"goal": "Fix error 500 in chat stream handler"})
+t = post(f"http://127.0.0.1:8787/v1/sessions/{s['sessionId']}/turns",
+         {"query": "Where is the 500 coming from?"})
+# t["assembled"] is what you send the generator — not the transcript
+# t["decision"]["permission"] is allow | ask | deny
+# t["decision"]["route"]["target"] is frontier | subagent | cheap | background
 ```
 
-Manifests are plain dicts — any LLM loop in any language can consume them.
-`pal.compile()` is the integration seam: intent in, structured work order out.
+Or import the loop directly:
 
-## C. Point it at your models (5 minutes)
-
-1. Vercel dashboard → AI Gateway → create API key.
-2. `export AI_GATEWAY_API_KEY=...`
-3. Edit `config.json`: change `default_model` / `cheap_model` to any
-   `"provider/model"` string. Per-agent models go in the manifest's
-   `runtime.model` — that's what the control panel's LLM picker writes.
-4. `python3 demo.py --live`
-
-No Docker, no servers. The gateway handles routing, fallbacks, and cost
-tracking.
-
-## D. Connect Supabase (30 minutes)
-
-`hub.py` is file-backed so it runs anywhere. To make it persistent and
-shared, subclass it (extension point is marked in the file) with this schema:
-
-```sql
-create table agents (id text primary key, spec jsonb,
-                     created_at timestamptz default now());
-create table runs (id text primary key, objective text,
-                   created_at timestamptz default now());
-create table steps (id bigserial primary key, run_id text references runs(id),
-                    agent text, thought text, action text, args jsonb,
-                    result jsonb, created_at timestamptz default now());
-create table reference (id bigserial primary key, kind text, text text,
-                        tags text[], embedding vector(1536),
-                        created_at timestamptz default now());
+```python
+from harness import HarnessSession
+from runtime import run_worker
 ```
 
-The runtime only calls the hub's public methods, so the swap is invisible
-to it. Add the `embedding` column when you implement vector search in
-`search_reference()`.
+## C. Point decisions at real Jev
 
-## E. Add real integrations (Composio) — 20 minutes
+```bash
+pip install typesafe-sdk
+export TYPESAFE_API_KEY=...
+```
 
-In `tools.py`, fill in the marked `attach_composio` extension point. Your
-agents then get Gmail, Calendar, Stripe, etc. through the same
-`registry.call()` path — allow/deny policy still applies. Your proprietary
-music tools (contract templates, EPK builder, royalty checks) stay as your
-own registered functions or your own hosted MCP servers.
+`jev.decide()` tries TypeSafe first, then the local engine.
 
-## What goes where as you grow
+## D. Point generation at your models
 
-| Next step | File to change | What to do |
-|---|---|---|
-| Smarter prompts | `pal.py` → `_enhance()` | Add one cheap-LLM enhancement call |
-| Smarter triage | `npao.py` → `classify_llm()` | Add LLM classifier, keep rules as fallback |
-| Real research | `ragdal.py` → `search()` | Implement the paper §5 contract |
-| Parallel workers | `runtime.py` → step 3 | ThreadPoolExecutor; keep NECESSITY blocking |
-| Dashboard | new `dashboard/` | Read `.rostr/` or Supabase — the Paperclip design already maps to it |
-| Ship as product | repo root | Publish skills/ as a Claude Code plugin; host the runtime as the API behind 6th Agent |
+Same as before: `AI_GATEWAY_API_KEY` + `config.json` `default_model` /
+`cheap_model`. The harness picks cheap vs frontier **per turn**, including
+reprocessing cost. Mixed Opus→Sonnet→Opus on a full transcript is the trap
+the paper prices out; this loop never does that.
+
+## The six questions, every turn
+
+| Decision | Typed answer |
+|---|---|
+| Context | hide / short / long / full per chunk |
+| Cache | reuse / rebuild (noul) |
+| Routing | frontier / sub-agent / cheap / background + $ |
+| Tools | ranked choice, top-k schemas |
+| Permissions | allow / ask / deny |
+| Security | open / standard / restricted / custom |
+
+## What went wrong in v1 (and is now fixed)
+
+The original `runtime.py` rebuilt a transcript prompt, dumped every allowed
+tool, and always called `default_model`. That is a while-loop around a KV
+cache. Routing looked cheap and was not. Compaction was query-blind.
+Sub-agents were an extension point because passing state was hard.
+
+The harness makes state addressable. Visibility is per query. Tools are
+disclosed in tiers. Routing is priced on the assembled context, not the
+session. Permissions inspect command + path, not just the binary name.
