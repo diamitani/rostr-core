@@ -1,13 +1,19 @@
 {
   "version": 2,
   "functions": {
-    "api/index.py": {
-      "includeFiles": "{*.py,agents/**,config.json,skills/**}"
+    "api/*.py": {
+      "includeFiles": "{*.py,agents/**,config.json,skills/**,api/**}"
     }
   },
   "rewrites": [
-    { "source": "/", "destination": "/api?__path=/" },
-    { "source": "/:path*", "destination": "/api?__path=/:path*" }
+    { "source": "/", "destination": "/api/health" },
+    { "source": "/health", "destination": "/api/health" },
+    { "source": "/v1", "destination": "/api/health" },
+    { "source": "/v1/health", "destination": "/api/health" },
+    { "source": "/v1/sessions/:id/turns", "destination": "/api/turns?id=:id" },
+    { "source": "/v1/sessions/:id", "destination": "/api/session?id=:id" },
+    { "source": "/v1/sessions", "destination": "/api/sessions" },
+    { "source": "/v1/generate", "destination": "/api/generate" }
   ],
   "headers": [
     {

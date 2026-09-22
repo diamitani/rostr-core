@@ -29,16 +29,30 @@ def _request_path(handler: BaseHTTPRequestHandler) -> str:
     qs = parse_qs(parsed.query)
     if qs.get("__path"):
         return qs["__path"][0].rstrip("/") or "/"
-    for header in ("x-invoke-path", "x-forwarded-uri", "x-vercel-original-path", "x-matched-path"):
+    for header in (
+        "x-invoke-path",
+        "x-forwarded-uri",
+        "x-vercel-original-path",
+        "x-matched-path",
+        "x-rewrite-path",
+        "x-real-url",
+        "x-original-uri",
+        "x-forwarded-path",
+    ):
         raw = handler.headers.get(header)
         if raw:
             return urlparse(raw).path.rstrip("/") or "/"
+    # Vercel sometimes puts the original URL in x-forwarded-url / referer-less host+path
+    xf = handler.headers.get("x-forwarded-url") or handler.headers.get("x-url")
+    if xf:
+        return urlparse(xf).path.rstrip("/") or "/"
     aliases = {"/api": "/", "/api/index": "/", "/api/index.py": "/"}
     if path in aliases:
         return aliases[path]
     if path.startswith("/api/"):
         return path[4:].rstrip("/") or "/"
     return path
+
 
 
 def _json(handler, code, payload):
@@ -99,7 +113,19 @@ class Handler(BaseHTTPRequestHandler):
             if not sess:
                 return _json(self, 404, {"ok": False, "error": "unknown session"})
             return _json(self, 200, {"ok": True, **_public(sess, sid)})
-        return _json(self, 404, {"ok": False, "error": "not found", "path": path})
+        return _json(self, 404, {
+            "ok": False,
+            "error": "not found",
+            "path": path,
+            "raw": self.path,
+            "headers": {k: v for k, v in self.headers.items()
+                        if k.lower() in (
+                            "host", "x-invoke-path", "x-forwarded-uri", "x-forwarded-url",
+                            "x-matched-path", "x-vercel-id", "x-real-url", "x-original-uri",
+                            "x-forwarded-path", "x-rewrite-path", "x-vercel-original-path",
+                            "x-forwarded-host", "x-invoke-query",
+                        )},
+        })
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -165,7 +191,19 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "generate": {"text": text, "model": model, "provider": "vercel-ai-gateway"},
             })
-        return _json(self, 404, {"ok": False, "error": "not found", "path": path})
+        return _json(self, 404, {
+            "ok": False,
+            "error": "not found",
+            "path": path,
+            "raw": self.path,
+            "headers": {k: v for k, v in self.headers.items()
+                        if k.lower() in (
+                            "host", "x-invoke-path", "x-forwarded-uri", "x-forwarded-url",
+                            "x-matched-path", "x-vercel-id", "x-real-url", "x-original-uri",
+                            "x-forwarded-path", "x-rewrite-path", "x-vercel-original-path",
+                            "x-forwarded-host", "x-invoke-query",
+                        )},
+        })
 
 
 def jev_tokens(text: str) -> int:
