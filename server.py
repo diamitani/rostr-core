@@ -129,7 +129,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return _json(self, 400, {"ok": False, "error": "invalid json"})
-        path = urlparse(self.path).path.rstrip("/")
+        path = _request_path(self)
         if path == "/v1/sessions":
             goal = (body.get("goal") or "").strip()
             if not goal:
