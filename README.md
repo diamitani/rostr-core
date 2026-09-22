@@ -41,9 +41,10 @@ python3 demo.py --live
 ## HTTP contract
 
 ```
-POST /v1/sessions              {"goal":"Fix error 500 in chat stream handler"}
+POST /v1/sessions              {"goal":"Fix error 500 in chat stream handler","scenario":"fix-500"}
 POST /v1/sessions/{id}/turns   {"query":"Where is the 500 coming from?"}
 GET  /v1/sessions/{id}
+POST /v1/generate              {"system","body","route"}
 ```
 
 The generator (if you attach one) sees only the assembled context: hidden

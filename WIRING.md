@@ -19,10 +19,11 @@ def post(url, payload):
     return json.loads(urllib.request.urlopen(req).read())
 
 s = post("http://127.0.0.1:8787/v1/sessions",
-         {"goal": "Fix error 500 in chat stream handler"})
+         {"goal": "Fix error 500 in chat stream handler", "scenario": "fix-500"})
 t = post(f"http://127.0.0.1:8787/v1/sessions/{s['sessionId']}/turns",
          {"query": "Where is the 500 coming from?"})
 # t["assembled"] is what you send the generator — not the transcript
+# t["action"] is the tool the harness actually ran against explicit state
 # t["decision"]["permission"] is allow | ask | deny
 # t["decision"]["route"]["target"] is frontier | subagent | cheap | background
 ```
