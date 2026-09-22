@@ -31,15 +31,10 @@ def _extract_json(text):
 
 
 def _pick_model(decision, config, fallback):
-    gw = config.get("gateway", {})
+    from gateway import model_for, resolve_gateway
+    resolved = resolve_gateway(config)
     target = decision["route"]["target"]
-    if target == "cheap":
-        return gw.get("cheap_model", fallback)
-    if target == "background":
-        return gw.get("background_model", gw.get("cheap_model", fallback))
-    if target == "subagent":
-        return gw.get("cheap_model", fallback)
-    return gw.get("frontier_model", fallback)
+    return model_for(target, resolved["models"]) or fallback
 
 
 def run_worker(manifest, hub, tools, config, run_id, verbose=True, mock_tag="worker"):
@@ -73,22 +68,23 @@ def run_worker(manifest, hub, tools, config, run_id, verbose=True, mock_tag="wor
 
         prompt = session.assemble(decision)
         model = _pick_model(decision, config, default_model)
+        route = decision["route"]["target"]
         hub.log_decision(
             run_id,
-            f"route={decision['route']['target']} tools={decision['tools']['disclosed']}",
+            f"route={route} tools={decision['tools']['disclosed']}",
             f"assembled {decision['cost']['xSmallTokens']} tok vs state {decision['cost']['xTokens']}",
         )
         raw = complete(model,
                        [{"role": "system", "content": system},
                         {"role": "user", "content": prompt}],
-                       config, mock_tag=mock_tag)
+                       config, mock_tag=mock_tag, route=route)
         try:
             act = _extract_json(raw)
         except ValueError:
             raw = complete(model,
                            [{"role": "system", "content": system},
                             {"role": "user", "content": prompt + "\n\nReply with JSON only."}],
-                           config, mock_tag=mock_tag)
+                           config, mock_tag=mock_tag, route=route)
             try:
                 act = _extract_json(raw)
             except ValueError:

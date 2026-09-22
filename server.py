@@ -118,13 +118,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = _request_path(self)
         if path in ("/", "/health", "/v1", "/v1/health"):
-            return _json(self, 200, {
-                **CONTRACT,
-                "gateway": {
-                    "baseUrl": "https://ai-gateway.vercel.sh/v1",
-                    "api_key_env": "AI_GATEWAY_API_KEY",
-                },
-            })
+            from gateway import gateway_status
+            cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+            try:
+                with open(cfg_path, encoding="utf-8") as f:
+                    config = json.load(f)
+            except OSError:
+                config = None
+            return _json(self, 200, {**CONTRACT, "gateway": gateway_status(config)})
         if path.startswith("/v1/sessions/"):
             sid = path.split("/")[3]
             sess = SESSIONS.get(sid)
@@ -186,27 +187,32 @@ class Handler(BaseHTTPRequestHandler):
             result = sess.run_turn(query, approve=bool(body.get("approve")))
             return _json(self, 200, _turn_payload(sid, sess, result))
         if path == "/v1/generate":
-            from gateway import complete
+            from gateway import complete_for_route, resolve_gateway
             cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
             with open(cfg_path, encoding="utf-8") as f:
                 config = json.load(f)
             route = body.get("route", "frontier")
-            gw = config["gateway"]
-            model = {
-                "cheap": gw.get("cheap_model"),
-                "background": gw.get("background_model") or gw.get("cheap_model"),
-                "subagent": gw.get("cheap_model"),
-            }.get(route, gw.get("frontier_model") or gw["default_model"])
+            resolved = resolve_gateway(config)
             try:
-                text = complete(model, [
+                text, model = complete_for_route(route, [
                     {"role": "system", "content": (body.get("system") or "")[:1500]},
                     {"role": "user", "content": (body.get("body") or "")[:6000]},
                 ], config)
             except Exception as e:
-                return _json(self, 502, {"ok": False, "error": str(e), "model": model})
+                return _json(self, 502, {
+                    "ok": False,
+                    "error": str(e),
+                    "provider": resolved["provider"],
+                    "auth": resolved["auth"],
+                })
             return _json(self, 200, {
                 "ok": True,
-                "generate": {"text": text, "model": model, "provider": "vercel-ai-gateway"},
+                "generate": {
+                    "text": text,
+                    "model": model,
+                    "provider": resolved["provider"],
+                    "auth": resolved["auth"],
+                },
             })
         return _json(self, 404, {"ok": False, "error": "not found", "path": path, "raw": self.path})
 

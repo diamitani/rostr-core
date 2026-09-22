@@ -33,8 +33,9 @@ python3 server.py --port 8787    # HTTP backend
 ```bash
 # live Jev
 export TYPESAFE_API_KEY=...
-# live generator
-export AI_GATEWAY_API_KEY=...
+# live generator — Vercel AI Gateway (preferred) or xAI direct
+export AI_GATEWAY_API_KEY=...     # or deploy on Vercel (OIDC)
+# export XAI_API_KEY=...          # preview fallback / Grok BYOK
 python3 demo.py --live
 ```
 

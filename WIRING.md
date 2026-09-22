@@ -55,10 +55,27 @@ Claude Code / Cursor into a Jev agent. Jev sits *beside* the generator.
 
 ## D. Point generation at your models
 
-Same as before: `AI_GATEWAY_API_KEY` + `config.json` `default_model` /
-`cheap_model`. The harness picks cheap vs frontier **per turn**, including
-reprocessing cost. Mixed Opus→Sonnet→Opus on a full transcript is the trap
-the paper prices out; this loop never does that.
+Auth order for the generator (same OpenAI-compatible `/chat/completions` shape):
+
+1. `AI_GATEWAY_API_KEY` → `https://ai-gateway.vercel.sh/v1`
+2. `VERCEL_OIDC_TOKEN` → same door, automatic on a Vercel deploy
+3. `XAI_API_KEY` → `https://api.x.ai/v1` (preview fallback; Grok slugs only)
+
+When the door is Vercel and `XAI_API_KEY` is also set, Grok is sent as
+BYOK (`providerOptions.gateway.byok.xai`) so frontier turns do not spend
+gateway credits. Each Jev route also carries a fallback list on the
+`models` array.
+
+| Jev route | config key | default (live catalog, dots not hyphens) |
+|---|---|---|
+| frontier | `frontier_model` | `spacexai/grok-4.5` |
+| subagent | `subagent_model` | `anthropic/claude-sonnet-4.6` |
+| cheap | `cheap_model` | `google/gemini-3.1-flash-lite` |
+| background | `background_model` | `google/gemini-2.5-flash-lite` |
+
+The harness picks cheap vs frontier **per turn**, including reprocessing
+cost. Mixed Opus→Sonnet→Opus on a full transcript is the trap the paper
+prices out; this loop never does that.
 
 ## The six questions, every turn
 
@@ -84,29 +101,22 @@ session. Permissions inspect command + path, not just the binary name.
 
 ## E. Deploy on Vercel (API gateway)
 
-ROSTR already talks to **Vercel AI Gateway** for generation (`gateway.py`,
-`AI_GATEWAY_API_KEY`, `https://ai-gateway.vercel.sh/v1`). The Jev harness now
-picks the model **per turn**:
-
-| Jev route | config key | default |
-|---|---|---|
-| frontier | `frontier_model` | `anthropic/claude-sonnet-4-6` |
-| subagent / cheap | `cheap_model` | `anthropic/claude-haiku-4-5` |
-| background | `background_model` | `anthropic/claude-haiku-4-5` |
+ROSTR talks to **Vercel AI Gateway** for generation (`gateway.py`). The Jev
+harness picks the model **per turn** (table in D). On Vercel, OIDC is enough
+— you do not have to paste `AI_GATEWAY_API_KEY` into the project.
 
 The same HTTP contract is a Vercel serverless function:
 
 ```
-GET  /v1/health
+GET  /v1/health            → contract + gateway provider / auth / credits
 POST /v1/sessions
 POST /v1/sessions/{id}/turns
 GET  /v1/sessions/{id}
 POST /v1/generate          { system, body, route }  → Vercel AI Gateway
 ```
 
-`vercel.json` + `api/index.py` wrap `server.py`. Set `AI_GATEWAY_API_KEY` in
-the Vercel project. Coding agents should call this origin, not a while-loop
-transcript.
+`vercel.json` + `api/index.py` wrap `server.py`. Coding agents should call
+this origin, not a while-loop transcript.
 
 rostr-platform can proxy the same `/v1` contract by setting `ROSTR_HARNESS_URL`
 to the Vercel deployment.

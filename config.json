@@ -1,11 +1,15 @@
 {
   "gateway": {
     "api_key_env": "AI_GATEWAY_API_KEY",
+    "oidc_env": "VERCEL_OIDC_TOKEN",
+    "xai_key_env": "XAI_API_KEY",
     "base_url": "https://ai-gateway.vercel.sh/v1",
-    "cheap_model": "anthropic/claude-haiku-4-5",
-    "background_model": "anthropic/claude-haiku-4-5",
-    "default_model": "anthropic/claude-sonnet-4-6",
-    "frontier_model": "anthropic/claude-sonnet-4-6",
+    "xai_base_url": "https://api.x.ai/v1",
+    "frontier_model": "spacexai/grok-4.5",
+    "subagent_model": "anthropic/claude-sonnet-4.6",
+    "cheap_model": "google/gemini-3.1-flash-lite",
+    "background_model": "google/gemini-2.5-flash-lite",
+    "default_model": "spacexai/grok-4.5",
     "timeout_s": 120
   },
   "hub": { "dir": ".rostr" },

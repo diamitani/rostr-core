@@ -15,6 +15,7 @@ from harness import HarnessSession, price_routes
 import pal as pal_mod
 import npao
 from server import Handler, SESSIONS
+import gateway
 
 
 class TestJev(unittest.TestCase):
@@ -29,6 +30,37 @@ class TestJev(unittest.TestCase):
     def test_npao_friction(self):
         label, _ = jev.classify_npao("fix the flaky chat test")
         self.assertEqual(label, "ANXIETY")
+
+
+class TestGateway(unittest.TestCase):
+    def test_model_for_live_catalog(self):
+        self.assertEqual(gateway.model_for("cheap", gateway.VERCEL_MODELS),
+                         "google/gemini-3.1-flash-lite")
+        self.assertEqual(gateway.model_for("frontier", gateway.VERCEL_MODELS),
+                         "spacexai/grok-4.5")
+        self.assertEqual(gateway.model_for("subagent", gateway.VERCEL_MODELS),
+                         "anthropic/claude-sonnet-4.6")
+
+    def test_fallbacks_only_on_vercel_door(self):
+        self.assertTrue(gateway.fallbacks_for("frontier", "vercel-ai-gateway"))
+        self.assertEqual(gateway.fallbacks_for("frontier", "xai-direct"), [])
+
+    def test_xai_direct_strips_provider_prefix(self):
+        resolved = {"provider": "xai-direct"}
+        self.assertEqual(gateway._effective_model("spacexai/grok-4.5", resolved), "grok-4.5")
+        self.assertEqual(gateway._effective_model("anthropic/claude-sonnet-4.6", resolved), "grok-4.5")
+
+    def test_resolve_without_keys_is_not_ready(self):
+        saved = {k: os.environ.pop(k, None)
+                 for k in ("AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN", "XAI_API_KEY")}
+        try:
+            info = gateway.resolve_gateway()
+            self.assertEqual(info["provider"], "none")
+            self.assertFalse(info["ready"])
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
 
 
 class TestHarness(unittest.TestCase):
@@ -152,6 +184,9 @@ class TestHttpBackend(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["version"], "0.4.0")
         self.assertIn("POST /v1/sessions/{id}/turns", body["endpoints"])
+        self.assertIn(body["gateway"]["provider"], ("vercel-ai-gateway", "xai-direct", "none"))
+        self.assertIn(body["gateway"]["models"]["frontier"], ("spacexai/grok-4.5", "grok-4.5"))
+        self.assertIn("cheap", body["gateway"]["models"])
 
     def test_session_turn_is_a_real_harness_loop(self):
         _, created = self._json("POST", "/v1/sessions", {
