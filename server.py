@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import uuid
+from typing import Dict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -57,15 +58,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
-        if path in ("/", "/health"):
+        if path in ("/", "/health", "/v1", "/v1/health"):
             return _json(self, 200, {
                 "ok": True,
                 "name": "ROSTR Jev harness",
-                "version": "0.2.0",
+                "version": "0.3.0",
+                "gateway": {
+                    "baseUrl": "https://ai-gateway.vercel.sh/v1",
+                    "api_key_env": "AI_GATEWAY_API_KEY",
+                },
                 "endpoints": [
+                    "GET /v1/health",
                     "POST /v1/sessions",
                     "POST /v1/sessions/{id}/turns",
                     "GET /v1/sessions/{id}",
+                    "POST /v1/generate",
                 ],
             })
         if path.startswith("/v1/sessions/"):
@@ -116,6 +123,29 @@ class Handler(BaseHTTPRequestHandler):
                 "assembled": assembled,
                 "assembledTokens": jev_tokens(assembled),
                 "session": _public(sess, sid),
+            })
+        if path == "/v1/generate":
+            from gateway import complete
+            cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+            with open(cfg_path, encoding="utf-8") as f:
+                config = json.load(f)
+            route = body.get("route", "frontier")
+            gw = config["gateway"]
+            model = {
+                "cheap": gw.get("cheap_model"),
+                "background": gw.get("background_model") or gw.get("cheap_model"),
+                "subagent": gw.get("cheap_model"),
+            }.get(route, gw.get("frontier_model") or gw["default_model"])
+            try:
+                text = complete(model, [
+                    {"role": "system", "content": (body.get("system") or "")[:1500]},
+                    {"role": "user", "content": (body.get("body") or "")[:6000]},
+                ], config)
+            except Exception as e:
+                return _json(self, 502, {"ok": False, "error": str(e), "model": model})
+            return _json(self, 200, {
+                "ok": True,
+                "generate": {"text": text, "model": model, "provider": "vercel-ai-gateway"},
             })
         return _json(self, 404, {"ok": False, "error": "not found"})
 

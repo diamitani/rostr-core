@@ -35,9 +35,11 @@ def _pick_model(decision, config, fallback):
     target = decision["route"]["target"]
     if target == "cheap":
         return gw.get("cheap_model", fallback)
-    if target in ("subagent", "background"):
+    if target == "background":
+        return gw.get("background_model", gw.get("cheap_model", fallback))
+    if target == "subagent":
         return gw.get("cheap_model", fallback)
-    return fallback
+    return gw.get("frontier_model", fallback)
 
 
 def run_worker(manifest, hub, tools, config, run_id, verbose=True, mock_tag="worker"):

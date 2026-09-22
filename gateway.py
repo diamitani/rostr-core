@@ -124,3 +124,16 @@ def _mock_complete(tag):
         return script[i]
     return json.dumps({"thought": "Nothing left to do.",
                        "done": True, "result": "mock trajectory complete"})
+
+
+def complete_for_route(route, messages, config, max_tokens=1024, temperature=0.2, mock_tag=None):
+    """Pick the Vercel AI Gateway model from a Jev route, then complete."""
+    gw = config.get("gateway", {})
+    if route in ("cheap", "subagent"):
+        model = gw.get("cheap_model") or gw.get("default_model")
+    elif route == "background":
+        model = gw.get("background_model") or gw.get("cheap_model") or gw.get("default_model")
+    else:
+        model = gw.get("frontier_model") or gw.get("default_model")
+    return complete(model, messages, config, max_tokens=max_tokens,
+                    temperature=temperature, mock_tag=mock_tag), model

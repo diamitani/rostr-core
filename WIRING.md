@@ -80,3 +80,32 @@ Sub-agents were an extension point because passing state was hard.
 The harness makes state addressable. Visibility is per query. Tools are
 disclosed in tiers. Routing is priced on the assembled context, not the
 session. Permissions inspect command + path, not just the binary name.
+
+## E. Deploy on Vercel (API gateway)
+
+ROSTR already talks to **Vercel AI Gateway** for generation (`gateway.py`,
+`AI_GATEWAY_API_KEY`, `https://ai-gateway.vercel.sh/v1`). The Jev harness now
+picks the model **per turn**:
+
+| Jev route | config key | default |
+|---|---|---|
+| frontier | `frontier_model` | `anthropic/claude-sonnet-4-6` |
+| subagent / cheap | `cheap_model` | `anthropic/claude-haiku-4-5` |
+| background | `background_model` | `anthropic/claude-haiku-4-5` |
+
+The same HTTP contract is a Vercel serverless function:
+
+```
+GET  /v1/health
+POST /v1/sessions
+POST /v1/sessions/{id}/turns
+GET  /v1/sessions/{id}
+POST /v1/generate          { system, body, route }  → Vercel AI Gateway
+```
+
+`vercel.json` + `api/index.py` wrap `server.py`. Set `AI_GATEWAY_API_KEY` in
+the Vercel project. Coding agents should call this origin, not a while-loop
+transcript.
+
+rostr-platform can proxy the same `/v1` contract by setting `ROSTR_HARNESS_URL`
+to the Vercel deployment.
