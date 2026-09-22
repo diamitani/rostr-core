@@ -1,10 +1,13 @@
 {
   "version": 2,
-  "builds": [
-    { "src": "api/index.py", "use": "@vercel/python" }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "/api/index.py" }
+  "functions": {
+    "api/index.py": {
+      "includeFiles": "{*.py,agents/**,config.json,skills/**}"
+    }
+  },
+  "rewrites": [
+    { "source": "/", "destination": "/api?__path=/" },
+    { "source": "/:path*", "destination": "/api?__path=/:path*" }
   ],
   "headers": [
     {
