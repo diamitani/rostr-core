@@ -40,6 +40,21 @@ class TestHarness(unittest.TestCase):
         self.assertEqual(vis[".env.local"], "hide")
         self.assertIn(vis["src/chat/stream.ts"], ("full", "long"))
 
+    def test_grep_excerpt_is_heatmap_not_prefix(self):
+        s = HarnessSession("Fix error 500 in chat stream handler")
+        noise = "\n".join(
+            "src/chat/stream.ts:4: JSON.parse(body) throws 500" if i == 7
+            else f"vendor-{i}.js: JSON.parse(payload)"
+            for i in range(40)
+        )
+        s.add("tool_out", "grep JSON.parse", noise)
+        d = s.decide("Where is the 500 coming from in the chat stream?")
+        vis = next(v for v, c in zip(d["visibility"], s.chunks) if c["title"] == "grep JSON.parse")
+        self.assertIn("stream.ts", vis["excerpt"])
+        self.assertNotIn("vendor-0.js", vis["excerpt"])
+        assembled = s.assemble(d)
+        self.assertNotIn("OPENAI_API_KEY", assembled)
+
     def test_tool_schemas_top_k(self):
         s = HarnessSession("Fix error 500 in chat stream handler")
         d = s.decide("Where is the 500 coming from?")

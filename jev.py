@@ -3,6 +3,11 @@
 Same contract as TypeSafe Jev: unstructured state in, typed Choice / Noul /
 Score out. Swap the body of `decide()` for typesafe_sdk when TYPESAFE_API_KEY
 is set. The local engine is evidence-weighted softmax — not Jev, not an LLM.
+
+Official SDK (today):
+    pip install typesafe-sdk
+    export TYPESAFE_API_KEY=...   # console.typesafe.ai/keys — no waitlist
+    POST https://api.typesafe.ai/v1/systemone
 """
 from __future__ import annotations
 
@@ -52,6 +57,24 @@ def lexical_overlap(query: str, text: str) -> float:
         return 0.0
     hay = text.lower()
     return sum(1 for w in q if w in hay) / len(q)
+
+
+def heat_lines(body: str, query: str) -> List[Dict]:
+    return [{"line": ln, "score": round(lexical_overlap(query, ln), 3)} for ln in body.splitlines()]
+
+
+def excerpt_from_heat(body: str, query: str, visibility: str) -> Tuple[str, List[Dict]]:
+    heat = heat_lines(body, query)
+    if visibility == "hide":
+        return "", heat
+    if visibility == "full":
+        return body, heat
+    thr = 0.22 if visibility == "short" else 0.08
+    cap = 12 if visibility == "short" else 40
+    kept = [h for h in heat if h["score"] >= thr]
+    if not kept:
+        kept = sorted(heat, key=lambda h: -h["score"])[: 4 if visibility == "short" else 12]
+    return "\n".join(h["line"] for h in kept[:cap]), heat
 
 
 def classify_phase(intent: str) -> Dict:
@@ -107,11 +130,8 @@ def tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-# ---------------------------------------------------------------------------
-# Live Jev (optional). Local engine is the default.
-# ---------------------------------------------------------------------------
 def decide(state: str, questions: Dict) -> Dict:
-    """questions: {name: {type: choice|noul, criteria?: {label: desc}}}"""
+    """questions: {name: {type: choice|noul|score, instructions?, criteria?}}"""
     key = os.environ.get("TYPESAFE_API_KEY", "")
     if key:
         try:
@@ -127,14 +147,60 @@ def decide(state: str, questions: Dict) -> Dict:
             answers[name] = noul(yes, no)
         else:
             criteria = q.get("criteria") or {"yes": "match", "no": "not"}
+            if isinstance(criteria, list):
+                criteria = {str(i): c for i, c in enumerate(criteria)}
             weights = {}
             for label, desc in criteria.items():
                 weights[label] = 0.25 + lexical_overlap(state, f"{label} {desc}") * 4
             answers[name] = distribution(weights)
-    return {"backend": "local", "answers": answers}
+    return {"backend": "local", "model": "local-softmax", "answers": answers}
 
 
 def _typesafe(state: str, questions: Dict, key: str) -> Dict:
-    from typesafe_sdk import TypeSafeClient  # type: ignore
-    client = TypeSafeClient(api_key=key, model="jev")
-    return {"backend": "jev", "answers": client.system_one(state, questions)}
+    """Official TypeSafe SDK. Dicts are not a valid questions payload."""
+    from typesafe_sdk import Choice, Noul, Score, TypeSafeClient  # type: ignore
+
+    mapped = {}
+    for name, q in questions.items():
+        qtype = q.get("type", "choice")
+        instructions = q.get("instructions") or name
+        if qtype == "noul":
+            mapped[name] = Noul(instructions=instructions)
+        elif qtype == "score":
+            criteria = q.get("criteria") or ["low", "high"]
+            if isinstance(criteria, dict):
+                criteria = list(criteria.values())
+            mapped[name] = Score(instructions=instructions, criteria=criteria)
+        else:
+            criteria = q.get("criteria") or {"yes": "match", "no": "not"}
+            mapped[name] = Choice(instructions=instructions, criteria=criteria)
+
+    with TypeSafeClient(api_key=key) as client:
+        result = client.system_one(state, mapped)
+
+    answers: Dict = {}
+    src = getattr(result, "answers", None) or result
+    choices = getattr(result, "choices", {}) or {}
+    nouls = getattr(result, "nouls", {}) or {}
+    scores = getattr(result, "scores", {}) or {}
+
+    for name, q in questions.items():
+        qtype = q.get("type", "choice")
+        obj = None
+        if hasattr(src, "get"):
+            obj = src.get(name)
+        if obj is None:
+            bucket = {"choice": choices, "noul": nouls, "score": scores}.get(qtype, {})
+            obj = bucket.get(name) if hasattr(bucket, "get") else None
+        if obj is None:
+            continue
+        if qtype == "noul":
+            n = float(getattr(obj, "noul", 0))
+            answers[name] = {"noul": n, "label": "yes" if n >= 0.5 else "no"}
+        else:
+            answers[name] = {
+                "choice": getattr(obj, "choice", getattr(obj, "score", None)),
+                "probabilities": getattr(obj, "probabilities", {}),
+                "confidence": getattr(obj, "confidence", 0),
+            }
+    return {"backend": "jev", "model": "jev-latest", "answers": answers}

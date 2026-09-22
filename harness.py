@@ -134,12 +134,7 @@ class HarnessSession:
         for c, v in zip(self.chunks, vis):
             if v["visibility"] == "hide":
                 continue
-            if v["visibility"] == "short":
-                xs += min(c["tokens"], 40)
-            elif v["visibility"] == "long":
-                xs += min(c["tokens"], 140)
-            else:
-                xs += c["tokens"]
+            xs += jev.tokens(v.get("excerpt") or "")
         return {
             "visibility": vis,
             "route": route,
@@ -167,11 +162,7 @@ class HarnessSession:
             v = vis_by_id.get(c["id"])
             if not v or v["visibility"] == "hide":
                 continue
-            body = c["body"]
-            if v["visibility"] == "short":
-                body = body[:140]
-            elif v["visibility"] == "long":
-                body = body[:480]
+            body = v.get("excerpt") or c["body"]
             lines.append(f"[{v['visibility']} | {c['kind']} | {c['title']}]")
             lines.append(body)
             lines.append("")
@@ -190,7 +181,8 @@ class HarnessSession:
         weights = {
             "hide": 0.35 + (4.5 if secret and not re.search(r"secret|env|key", q, re.I) else 0)
                     + (2.4 if c["kind"] == "tool_out" and overlap < 0.08 else 0),
-            "short": 0.9 + (1.4 if c["kind"] == "goal" else 0) + overlap * 0.4,
+            "short": 0.9 + (1.4 if c["kind"] == "goal" else 0) + overlap * 0.4
+                     + (1.8 if c["kind"] == "tool_out" and c["tokens"] > 80 else 0),
             "long": 0.55 + overlap * 3.2 + (0.6 if c["kind"] == "file" else 0),
             "full": 0.15 + path_hit + (2.6 if overlap > 0.35 else 0),
         }
@@ -199,9 +191,9 @@ class HarnessSession:
             weights["long"] = 0.05
         d = jev.distribution(weights)
         vis = d["choice"]
-        excerpt = "" if vis == "hide" else c["body"][: {"short": 140, "long": 480, "full": 10_000}[vis]]
+        excerpt, heat = jev.excerpt_from_heat(c["body"], q, vis)
         return {"chunkId": c["id"], "visibility": vis, "confidence": d["confidence"],
-                "probabilities": d["probabilities"], "excerpt": excerpt}
+                "probabilities": d["probabilities"], "excerpt": excerpt, "heat": heat}
 
     def _rank_tools(self, query: str) -> List[Dict]:
         text = f"{query} {self.goal}".lower()

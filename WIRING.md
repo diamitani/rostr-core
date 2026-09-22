@@ -34,14 +34,23 @@ from harness import HarnessSession
 from runtime import run_worker
 ```
 
-## C. Point decisions at real Jev
+## C. Point decisions at real Jev (today)
+
+Jev is open. No waitlist.
 
 ```bash
 pip install typesafe-sdk
-export TYPESAFE_API_KEY=...
+export TYPESAFE_API_KEY=...   # https://console.typesafe.ai/keys
 ```
 
-`jev.decide()` tries TypeSafe first, then the local engine.
+`jev.decide()` builds real `Choice` / `Noul` / `Score` objects and calls
+`TypeSafeClient.system_one`. Dicts are not a valid payload.
+
+The adapter (`pip install 'system-one-adapter[openai]'`) is comparison-only.
+Do not point PAL or per-turn routing at it.
+
+TypeSafe's own coding-agent docs: there is no `model: "jev-latest"` that turns
+Claude Code / Cursor into a Jev agent. Jev sits *beside* the generator.
 
 ## D. Point generation at your models
 
@@ -54,7 +63,7 @@ the paper prices out; this loop never does that.
 
 | Decision | Typed answer |
 |---|---|
-| Context | hide / short / long / full per chunk |
+| Context | hide / short / long / full per chunk; grep is heatmap-filtered, not prefix-sliced |
 | Cache | reuse / rebuild (noul) |
 | Routing | frontier / sub-agent / cheap / background + $ |
 | Tools | ranked choice, top-k schemas |
