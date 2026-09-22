@@ -1,21 +1,18 @@
 """The runtime loop.
 
 Two functions:
-  run_worker(manifest, ...) — ONE agent working: PAL rebuilds the prompt every
-      iteration -> LLM picks a JSON action -> tool runs -> result recorded ->
-      repeat until done / max steps.
-  run_master(objective, ...) — the orchestrator: decompose -> NPAO classify ->
+  run_worker(manifest, ...) — ONE agent working. The Jev harness scores every
+      chunk, discloses tools in tiers, prices routing, then the model sees an
+      assembled context — not an append-only transcript.
+  run_master(objective, ...) — orchestrator: decompose -> NPAO classify ->
       order N->A->P->O -> run a worker per task -> verify -> log decisions.
-
-The runtime is deliberately thin. All the smarts live in PAL (what the agent
-is told), NPAO (what it does next), the hub (what it remembers), and the
-tools (what it can touch).
 """
 import json
 import os
 
 import npao
 import pal as pal_mod
+from harness import HarnessSession
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -33,32 +30,61 @@ def _extract_json(text):
     return json.loads(text[s:e + 1])
 
 
+def _pick_model(decision, config, fallback):
+    from gateway import model_for, resolve_gateway
+    resolved = resolve_gateway(config)
+    target = decision["route"]["target"]
+    return model_for(target, resolved["models"]) or fallback
+
+
 def run_worker(manifest, hub, tools, config, run_id, verbose=True, mock_tag="worker"):
     """Run one worker to completion. Returns {"status", "result", "steps"}."""
-    from gateway import complete  # local import: keeps `import runtime` light
+    from gateway import complete
 
     agent_type = manifest["runtime"]["agent_type"]
-    model = manifest["runtime"]["model"]
+    default_model = manifest["runtime"]["model"]
     max_steps = manifest["runtime"].get(
         "max_steps", config["runtime"]["max_steps_per_worker"])
     system = _read_agent_file("worker.md")
-    history = []
+    session = HarnessSession.from_manifest(manifest)
+    query = manifest["instructions"]["task_description"]
+    auto = os.environ.get("ROSTR_AUTO_APPROVE", "") == "1"
 
     for step in range(max_steps):
-        # THE key line: PAL rebuilds the prompt every iteration with fresh state.
-        prompt = pal_mod.build_step_prompt(manifest, history)
+        decision = session.decide(query)
+        perm = decision["permission"]["action"]
+        if perm == "deny":
+            hub.log_decision(run_id, "deny " + decision["permission"]["command"],
+                             decision["permission"]["reason"])
+            return {"status": "denied", "result": decision["permission"]["reason"],
+                    "steps": step, "decision": decision}
+        if perm == "ask" and not auto:
+            hub.log_decision(run_id, "ask " + str(decision["permission"].get("command")),
+                             decision["permission"]["reason"])
+            if verbose:
+                print(f"  [step {step + 1}] ASK: {decision['permission']['reason']}")
+            return {"status": "needs_approval", "result": decision["permission"],
+                    "steps": step, "decision": decision}
+
+        prompt = session.assemble(decision)
+        model = _pick_model(decision, config, default_model)
+        route = decision["route"]["target"]
+        hub.log_decision(
+            run_id,
+            f"route={route} tools={decision['tools']['disclosed']}",
+            f"assembled {decision['cost']['xSmallTokens']} tok vs state {decision['cost']['xTokens']}",
+        )
         raw = complete(model,
                        [{"role": "system", "content": system},
                         {"role": "user", "content": prompt}],
-                       config, mock_tag=mock_tag)
+                       config, mock_tag=mock_tag, route=route)
         try:
             act = _extract_json(raw)
         except ValueError:
-            # One reformat retry, then stop cleanly with what we have.
             raw = complete(model,
                            [{"role": "system", "content": system},
                             {"role": "user", "content": prompt + "\n\nReply with JSON only."}],
-                           config, mock_tag=mock_tag)
+                           config, mock_tag=mock_tag, route=route)
             try:
                 act = _extract_json(raw)
             except ValueError:
@@ -70,18 +96,20 @@ def run_worker(manifest, hub, tools, config, run_id, verbose=True, mock_tag="wor
             hub.log_step(run_id, agent_type, thought, "done", {}, act.get("result"))
             if verbose:
                 print(f"  [step {step + 1}] done: {str(act.get('result'))[:100]}")
-            return {"status": "done", "result": act.get("result"), "steps": step + 1}
+            return {"status": "done", "result": act.get("result"), "steps": step + 1,
+                    "decision": decision}
 
         action, args = act.get("action", ""), act.get("args", {})
         res = tools.call(action, args)
+        session.record_tool(action, args, res)
         hub.log_step(run_id, agent_type, thought, action, args, res)
-        history.append({"thought": thought, "action": action, "result": res})
         if verbose:
             ok = res.get("ok")
-            print(f"  [step {step + 1}] {thought[:70]} -> {action} (ok={ok})")
+            vis = sum(1 for v in decision["visibility"] if v["visibility"] != "hide")
+            print(f"  [step {step + 1}] {thought[:60]} -> {action} (ok={ok}) "
+                  f"[{decision['route']['target']}, {vis} chunks visible]")
 
-    return {"status": "max_steps", "result": history[-1] if history else None,
-            "steps": max_steps}
+    return {"status": "max_steps", "result": None, "steps": max_steps}
 
 
 def run_master(objective, hub, tools, config, verbose=True):
@@ -91,7 +119,6 @@ def run_master(objective, hub, tools, config, verbose=True):
     run_id = hub.create_run(objective)
     system = _read_agent_file("master.md")
 
-    # 1. Decompose into subtasks.
     raw = complete(
         config["gateway"]["cheap_model"],
         [{"role": "system", "content": system},
@@ -102,7 +129,6 @@ def run_master(objective, hub, tools, config, verbose=True):
         config, mock_tag="master:decompose")
     subtasks = _extract_json(raw)["subtasks"]
 
-    # 2. NPAO classify + order N -> A -> P -> O.
     tasks = []
     for s in subtasks:
         cls, reason = npao.classify(s["text"])
@@ -114,7 +140,6 @@ def run_master(objective, hub, tools, config, verbose=True):
                      f"execution order: {[t['npao'] for t in tasks]}",
                      "NPAO triage — Necessity, then Anxiety, then Priority, then Opportunity")
 
-    # 3. A worker per task, in order. (Parallel fan-out is the extension point.)
     results = []
     for i, t in enumerate(tasks):
         if verbose:
@@ -133,7 +158,6 @@ def run_master(objective, hub, tools, config, verbose=True):
                         r.get("result"))
         results.append({"task": t["text"], "npao": t["npao"], **r})
 
-    # 4. Report.
     done = sum(1 for r in results if r["status"] == "done")
     hub.log_decision(run_id, f"{done}/{len(results)} tasks done",
                      "master verification pass")
@@ -141,11 +165,3 @@ def run_master(objective, hub, tools, config, verbose=True):
         print(f"\n[master] finished: {done}/{len(results)} tasks done "
               f"(run {run_id})")
     return {"run_id": run_id, "results": results}
-
-
-# ---------------------------------------------------------------------------
-# EXTENSION POINT: parallel workers
-# Replace the sequential loop in step 3 with a ThreadPoolExecutor over
-# run_worker calls (one Hub/ToolRegistry per thread, or add locking).
-# Keep NPAO order for NECESSITY tasks — they block everything else.
-# ---------------------------------------------------------------------------

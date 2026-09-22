@@ -27,11 +27,9 @@ def classify(text, blocks=()):
     t = text.lower()
     if blocks or any(w in t for w in _BLOCKER_WORDS):
         return NECESSITY, "blocks downstream work — resolve first"
-    if any(w in t for w in _FRICTION_WORDS):
-        return ANXIETY, "unresolved friction degrades everything else"
-    if any(w in t for w in _OPPORTUNITY_WORDS):
-        return OPPORTUNITY, "optional growth — only with spare capacity"
-    return PRIORITY, "mission work (default class)"
+    import jev
+    label, reason = jev.classify_npao(text, blocks)
+    return label, reason
 
 
 def order(tasks):
